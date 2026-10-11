@@ -1,0 +1,19 @@
+[Unit]
+Description=Self-hosted booking page
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=booking
+Group=booking
+WorkingDirectory=/opt/booking-page
+ExecStart=/usr/bin/node /opt/booking-page/dist/index.js
+Restart=on-failure
+RestartSec=5
+Environment=NODE_ENV=production
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,11 @@
+services:
+  booking-page:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3300:3300"
+    env_file: .env
+    environment:
+      DATABASE_PATH: /app/data/bookings.db
+    volumes:
+      - ./data:/app/data
