@@ -2,6 +2,8 @@
 
 A small, self-hosted alternative to hosted scheduling tools such as Calendly. Publish booking pages for your event types, let guests pick a free slot in their own time zone, and keep every booking in one SQLite file. It runs as a single Node.js process with no Redis, PostgreSQL, Docker, or external account required.
 
+![Public booking page](docs/booking-page.png)
+
 ## Features
 
 - Event types with duration, slot step, buffer around bookings, minimum notice, booking horizon, location, and description
@@ -37,6 +39,8 @@ Open `http://localhost:3300/dashboard`, create an event type, and share its book
 | `npm test` | Run the test suite |
 | `npm run lint` | Type-check and verify formatting |
 | `npm run format` | Format sources with Prettier |
+
+![Booking dashboard](docs/dashboard.png)
 
 ## How scheduling works
 

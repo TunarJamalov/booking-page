@@ -34,6 +34,7 @@ form.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
 .summary span{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:6px 12px;font-size:13px}
 .msg{min-height:20px;margin:8px 0 0}.msg.error{color:var(--bad)}
 .hidden{display:none !important}
+#form-panel>summary{cursor:pointer;list-style:none}#form-panel>summary::before{content:'+ ';color:var(--muted)}#form-panel[open]>summary::before{content:'\\2212 '}#form-panel>summary::-webkit-details-marker{display:none}#form-panel[open]>summary{margin-bottom:12px}
 pre{background:var(--bg);padding:10px;border-radius:6px;overflow:auto;white-space:pre-wrap;word-break:break-all;font-size:12px}
 .windows{display:grid;gap:6px}
 .window{display:grid;grid-template-columns:110px 1fr 1fr auto;gap:8px;align-items:end}
@@ -232,7 +233,7 @@ function fillForm(ev) {
   renderWindows();
   $('form-title').textContent = ev ? 'Edit event type' : 'New event type';
   $('cancel').classList.toggle('hidden', !ev);
-  if (ev) window.scrollTo({ top: 0, behavior: 'smooth' });
+  if (ev) { $('form-panel').open = true; window.scrollTo({ top: 0, behavior: 'smooth' }); }
 }
 $('cancel').onclick = function () { fillForm(null); showMessage('form-message', ''); };
 $('event-form').onsubmit = async function (e) {
@@ -290,7 +291,7 @@ export function dashboardPage() {
   return page(
     'Dashboard',
     `<h1>Booking dashboard</h1>${nav('/dashboard')}<div id="summary" class="summary"></div>
-<section class="panel"><h2 id="form-title">New event type</h2><form id="event-form" class="grid">
+<details class="panel" id="form-panel"><summary><h2 id="form-title" style="display:inline">New event type</h2></summary><form id="event-form" class="grid">
 <label class="wide">Name<input id="name" placeholder="30 minute call" required></label>
 <label>URL slug<input id="slug" placeholder="auto from name"></label>
 <label class="full">Description<textarea id="description" placeholder="What this meeting is for"></textarea></label>
@@ -303,7 +304,7 @@ export function dashboardPage() {
 <label class="full">Location or link<input id="location" placeholder="Google Meet link, phone, office address"></label>
 <div class="full"><span class="muted">Weekly availability (your time zone)</span><div id="windows" class="windows"></div><p><button type="button" id="add-window">Add window</button></p></div>
 <div class="full actions"><button class="primary">Save event type</button><button type="button" id="cancel" class="hidden">Cancel edit</button></div>
-</form><p id="form-message" class="msg"></p></section>
+</form><p id="form-message" class="msg"></p></details>
 <h2>Event types</h2><div id="events"></div>
 <div class="row"><h2>Bookings</h2><label style="width:auto"><input type="checkbox" id="show-past" style="width:auto"> Show past and cancelled</label></div><div id="bookings"></div>
 <section class="panel"><h2>Blocked time</h2><form id="block-form" class="grid"><label>From<input id="block-start" type="datetime-local" required></label><label>To<input id="block-end" type="datetime-local" required></label><label>Reason (optional)<input id="block-reason" placeholder="Vacation"></label><div class="full actions"><button class="primary">Block time</button></div></form><p id="block-message" class="msg"></p><div id="blocks"></div></section>`,
