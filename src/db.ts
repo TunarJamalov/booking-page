@@ -41,6 +41,10 @@ export interface Booking {
   cancelToken: string;
   cancelledAt: number | null;
   cancelledBy: string | null;
+  /** Incremented on every reschedule so calendar clients update the existing event. */
+  sequence: number;
+  rescheduledFrom: number | null;
+  reminderSentAt: number | null;
   createdAt: number;
 }
 export interface Block {
@@ -93,6 +97,9 @@ export function openDatabase(filename: string): Database.Database {
       cancel_token TEXT NOT NULL UNIQUE,
       cancelled_at INTEGER,
       cancelled_by TEXT,
+      sequence INTEGER NOT NULL DEFAULT 0,
+      rescheduled_from INTEGER,
+      reminder_sent_at INTEGER,
       created_at INTEGER NOT NULL
     );
     CREATE TABLE IF NOT EXISTS blocks (
@@ -104,6 +111,17 @@ export function openDatabase(filename: string): Database.Database {
     CREATE INDEX IF NOT EXISTS bookings_time ON bookings(status, starts_at);
     CREATE INDEX IF NOT EXISTS blocks_time ON blocks(starts_at, ends_at);
   `);
+  for (const statement of [
+    'ALTER TABLE bookings ADD COLUMN sequence INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE bookings ADD COLUMN rescheduled_from INTEGER',
+    'ALTER TABLE bookings ADD COLUMN reminder_sent_at INTEGER',
+  ]) {
+    try {
+      db.exec(statement);
+    } catch {
+      /* Existing installations already have this column. */
+    }
+  }
   return db;
 }
 
@@ -221,7 +239,7 @@ export function removeEventType(db: Database.Database, id: number) {
 
 /* ---------- Bookings ---------- */
 const bookingColumns =
-  'b.id,b.event_type_id as eventTypeId,e.name as eventName,b.starts_at as startsAt,b.ends_at as endsAt,b.guest_name as guestName,b.guest_email as guestEmail,b.guest_time_zone as guestTimeZone,b.notes,b.status,b.cancel_token as cancelToken,b.cancelled_at as cancelledAt,b.cancelled_by as cancelledBy,b.created_at as createdAt FROM bookings b JOIN event_types e ON e.id=b.event_type_id';
+  'b.id,b.event_type_id as eventTypeId,e.name as eventName,b.starts_at as startsAt,b.ends_at as endsAt,b.guest_name as guestName,b.guest_email as guestEmail,b.guest_time_zone as guestTimeZone,b.notes,b.status,b.cancel_token as cancelToken,b.cancelled_at as cancelledAt,b.cancelled_by as cancelledBy,b.sequence,b.rescheduled_from as rescheduledFrom,b.reminder_sent_at as reminderSentAt,b.created_at as createdAt FROM bookings b JOIN event_types e ON e.id=b.event_type_id';
 
 export function listBookings(
   db: Database.Database,
@@ -246,13 +264,19 @@ export function getBookingByToken(db: Database.Database, token: string): Booking
   return db.prepare(`SELECT ${bookingColumns} WHERE b.cancel_token=?`).get(token) as Booking | undefined;
 }
 /** Busy intervals (confirmed bookings including buffers, plus manual blocks) overlapping [from, to). */
-export function busyIntervals(db: Database.Database, from: number, to: number, bufferMinutes = 0) {
+export function busyIntervals(
+  db: Database.Database,
+  from: number,
+  to: number,
+  bufferMinutes = 0,
+  excludeBookingId: number | null = null
+) {
   const buffer = bufferMinutes * 60000;
   const bookings = db
     .prepare(
-      "SELECT starts_at as startsAt, ends_at as endsAt FROM bookings WHERE status='confirmed' AND ends_at+?>? AND starts_at-?<?"
+      "SELECT starts_at as startsAt, ends_at as endsAt FROM bookings WHERE status='confirmed' AND ends_at+?>? AND starts_at-?<? AND id IS NOT ?"
     )
-    .all(buffer, from, buffer, to) as { startsAt: number; endsAt: number }[];
+    .all(buffer, from, buffer, to, excludeBookingId) as { startsAt: number; endsAt: number }[];
   const blocks = db
     .prepare('SELECT starts_at as startsAt, ends_at as endsAt FROM blocks WHERE ends_at>? AND starts_at<?')
     .all(from, to) as { startsAt: number; endsAt: number }[];
@@ -287,6 +311,32 @@ export function createBooking(
       Date.now()
     ).lastInsertRowid;
   return getBooking(db, Number(id))!;
+}
+/** Moves a confirmed booking to a new start; the caller has already checked that the slot is free. */
+export function rescheduleBooking(
+  db: Database.Database,
+  id: number,
+  startsAt: number,
+  durationMinutes: number
+) {
+  const current = getBooking(db, id);
+  if (!current || current.status !== 'confirmed') return undefined;
+  db.prepare(
+    'UPDATE bookings SET starts_at=?,ends_at=?,rescheduled_from=?,sequence=sequence+1,reminder_sent_at=NULL WHERE id=?'
+  ).run(startsAt, startsAt + durationMinutes * 60000, current.startsAt, id);
+  return getBooking(db, id);
+}
+/** Confirmed bookings that start within the reminder window and have not been reminded yet. */
+export function dueReminders(db: Database.Database, hoursAhead: number, now = Date.now()): Booking[] {
+  if (!hoursAhead) return [];
+  return db
+    .prepare(
+      `SELECT ${bookingColumns} WHERE b.status='confirmed' AND b.reminder_sent_at IS NULL AND b.starts_at>? AND b.starts_at<=? ORDER BY b.starts_at`
+    )
+    .all(now, now + hoursAhead * 3600000) as Booking[];
+}
+export function markReminded(db: Database.Database, id: number, at = Date.now()) {
+  db.prepare('UPDATE bookings SET reminder_sent_at=? WHERE id=?').run(at, id);
 }
 export function cancelBooking(db: Database.Database, id: number, by: 'guest' | 'owner', at = Date.now()) {
   const changes = db

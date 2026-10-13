@@ -24,7 +24,8 @@ export function slotsForDay(
   event: EventType,
   day: string,
   timeZone: string,
-  now = Date.now()
+  now = Date.now(),
+  excludeBookingId: number | null = null
 ): Slot[] {
   const key = parseDateKey(day);
   if (!key) throw new Error('day must be YYYY-MM-DD');
@@ -37,7 +38,13 @@ export function slotsForDay(
   const weekday = new Date(Date.UTC(key.year, key.month - 1, key.day)).getUTCDay();
   const windows = event.windows.filter((w) => w.weekday === weekday);
   if (!windows.length) return [];
-  const busy = busyIntervals(db, dayStart - 86400000, nextDay + 86400000, event.bufferMinutes);
+  const busy = busyIntervals(
+    db,
+    dayStart - 86400000,
+    nextDay + 86400000,
+    event.bufferMinutes,
+    excludeBookingId
+  );
   const duration = event.durationMinutes * 60000;
   const step = event.slotStepMinutes * 60000;
   const slots: Slot[] = [];
@@ -80,14 +87,16 @@ export function slotIsBookable(
   event: EventType,
   startsAt: number,
   timeZone: string,
-  now = Date.now()
+  now = Date.now(),
+  excludeBookingId: number | null = null
 ) {
   const key = parseDateKey(new Date(startsAt).toISOString().slice(0, 10))!;
   // The slot's calendar day in the owner's zone may differ from the UTC day; check both neighbours.
   for (const offset of [-1, 0, 1]) {
     const k = addDays(key, offset);
     const day = `${k.year}-${String(k.month).padStart(2, '0')}-${String(k.day).padStart(2, '0')}`;
-    if (slotsForDay(db, event, day, timeZone, now).some((s) => s.startsAt === startsAt)) return true;
+    if (slotsForDay(db, event, day, timeZone, now, excludeBookingId).some((s) => s.startsAt === startsAt))
+      return true;
   }
   return false;
 }

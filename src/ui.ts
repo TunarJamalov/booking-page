@@ -166,11 +166,78 @@ export function bookingPage(event: any) {
   );
 }
 
+const rescheduleScript = `
+${helpers}
+var token = location.pathname.split('/')[2];
+var days = [], selectedDay = null, selectedSlot = null, month = null, current = 0;
+var tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+function dayKey(d) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+function renderCalendar() {
+  var first = new Date(month.getFullYear(), month.getMonth(), 1);
+  var html = '<div class="row"><button type="button" id="prev">&lsaquo;</button><strong>' + first.toLocaleDateString(undefined, { month: 'long', year: 'numeric' }) + '</strong><button type="button" id="next">&rsaquo;</button></div><div class="days">';
+  ['S', 'M', 'T', 'W', 'T', 'F', 'S'].forEach(function (d) { html += '<div class="dow">' + d + '</div>'; });
+  for (var i = 0; i < first.getDay(); i++) html += '<div></div>';
+  var count = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate();
+  for (var d = 1; d <= count; d++) {
+    var key = dayKey(new Date(month.getFullYear(), month.getMonth(), d));
+    var free = days.indexOf(key) >= 0;
+    html += '<button type="button" data-day="' + key + '"' + (free ? '' : ' disabled') + (key === selectedDay ? ' class="selected"' : '') + '>' + d + '</button>';
+  }
+  $('calendar').innerHTML = html + '</div>';
+  $('prev').onclick = function () { month = new Date(month.getFullYear(), month.getMonth() - 1, 1); renderCalendar(); };
+  $('next').onclick = function () { month = new Date(month.getFullYear(), month.getMonth() + 1, 1); renderCalendar(); };
+}
+$('calendar').onclick = async function (e) {
+  var b = e.target.closest('[data-day]'); if (!b) return;
+  selectedDay = b.getAttribute('data-day'); selectedSlot = null; renderCalendar();
+  $('slots').innerHTML = '<p class="muted">Loading...</p>';
+  var data = await (await fetch('/api/reschedule/' + token + '?day=' + selectedDay)).json();
+  $('slot-title').textContent = new Date(selectedDay + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+  $('slots').innerHTML = data.slots.map(function (s) { return '<button type="button" data-slot="' + s.startsAt + '"' + (s.startsAt === current ? ' disabled title="Current time"' : '') + '>' + fmt(s.startsAt, tz, { dateStyle: undefined, timeStyle: 'short' }) + '</button>'; }).join('') || '<p class="muted">No free times on this day.</p>';
+};
+$('slots').onclick = function (e) {
+  var b = e.target.closest('[data-slot]'); if (!b) return;
+  selectedSlot = Number(b.getAttribute('data-slot'));
+  Array.from($('slots').children).forEach(function (el) { el.classList.toggle('selected', el === b); });
+  $('chosen').textContent = 'New time: ' + fmt(selectedSlot, tz) + ' (' + tz + ')';
+  $('confirm').classList.remove('hidden');
+};
+$('confirm').onclick = async function () {
+  if (!selectedSlot) return;
+  $('confirm').disabled = true;
+  var r = await fetch('/api/reschedule/' + token, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ startsAt: selectedSlot }) });
+  $('confirm').disabled = false;
+  if (!r.ok) { showMessage('m', await r.text(), true); return; }
+  var data = await r.json();
+  $('picker').classList.add('hidden'); $('done').classList.remove('hidden');
+  $('done-when').textContent = fmt(data.startsAt, tz) + ' (' + tz + ')';
+  $('done-email').textContent = data.emailSent ? 'An updated invitation was sent by email.' : 'Download the updated calendar file below.';
+};
+(async function () {
+  var info = await (await fetch('/api/reschedule/' + token)).json();
+  days = info.days; current = info.startsAt;
+  $('current').textContent = 'Currently booked for ' + fmt(current, tz) + ' (' + tz + ')';
+  var firstDay = days.length ? new Date(days[0] + 'T12:00:00') : new Date();
+  month = new Date(firstDay.getFullYear(), firstDay.getMonth(), 1);
+  renderCalendar();
+})();
+`;
+
+export function reschedulePage(booking: any, event: any) {
+  return page(
+    `Reschedule ${event.name}`,
+    `<div class="center" style="max-width:860px"><a href="/cancel/${escapeHtml(booking.cancelToken)}" class="muted">&larr; Manage booking</a><h1>Reschedule ${escapeHtml(event.name)}</h1><p class="muted" id="current"></p>
+<div id="picker" class="booking-layout"><div class="panel" id="calendar"></div><div><div class="panel"><h2 id="slot-title">Pick a new day</h2><div id="slots" class="slots"><p class="muted">Select a day to see free times.</p></div><p class="muted" id="chosen" style="margin-top:12px"></p><p><button class="primary hidden" id="confirm">Confirm new time</button></p><p id="m" class="msg"></p></div></div></div>
+<div id="done" class="panel hidden"><h2>Booking moved</h2><p><strong id="done-when"></strong></p><p class="muted" id="done-email"></p><p><a href="/cancel/${escapeHtml(booking.cancelToken)}/invite.ics">Download calendar file</a></p></div></div>`,
+    rescheduleScript
+  );
+}
+
 export function cancelPage(booking: any, timeZone: string) {
   const cancelled = booking.status === 'cancelled';
   return page(
-    'Cancel booking',
-    `<div class="center card"><h1>${cancelled ? 'Booking cancelled' : 'Cancel booking'}</h1><p><strong>${escapeHtml(booking.eventName)}</strong></p><p id="when" class="muted"></p>${cancelled ? '<p>This booking has already been cancelled.</p>' : '<p>Do you want to cancel this booking?</p><p><button class="danger" id="confirm">Yes, cancel it</button></p>'}<p id="m" class="msg"></p><p><a href="/cancel/${escapeHtml(booking.cancelToken)}/invite.ics">Download calendar file</a></p></div>`,
+    'Manage booking',
+    `<div class="center card"><h1>${cancelled ? 'Booking cancelled' : 'Manage booking'}</h1><p><strong>${escapeHtml(booking.eventName)}</strong></p><p id="when" class="muted"></p>${cancelled ? '<p>This booking has already been cancelled.</p>' : `<p>Need a different time? <a href="/reschedule/${escapeHtml(booking.cancelToken)}">Reschedule this booking</a>.</p><p>Or cancel it:</p><p><button class="danger" id="confirm">Yes, cancel it</button></p>`}<p id="m" class="msg"></p><p><a href="/cancel/${escapeHtml(booking.cancelToken)}/invite.ics">Download calendar file</a></p></div>`,
     `var tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ${JSON.stringify(timeZone)};
 document.getElementById('when').textContent = new Intl.DateTimeFormat(undefined, { timeZone: tz, dateStyle: 'full', timeStyle: 'short' }).format(new Date(${Number(booking.startsAt)})) + ' (' + tz + ')';
 var b = document.getElementById('confirm');
@@ -248,7 +315,7 @@ function eventCard(ev) {
 }
 function bookingRow(b) {
   var past = b.endsAt < Date.now();
-  return '<article class="card" data-booking="' + b.id + '"><div class="row"><div><strong>' + esc(fmt(b.startsAt, overview.timeZone)) + '</strong> <span class="muted">(' + esc(overview.timeZone) + ')</span><div>' + esc(b.eventName) + ' · ' + esc(b.guestName) + ' &lt;' + esc(b.guestEmail) + '&gt;</div>' + (b.notes ? '<div class="muted">' + esc(b.notes) + '</div>' : '') + '<div class="muted">Guest time zone ' + esc(b.guestTimeZone) + ' · booked ' + esc(fmt(b.createdAt, overview.timeZone)) + (b.cancelledAt ? ' · cancelled by ' + esc(b.cancelledBy) : '') + '</div></div>' + (b.status === 'cancelled' ? '<span class="badge off">CANCELLED</span>' : past ? '<span class="badge warn">PAST</span>' : '<span class="badge">CONFIRMED</span>') + '</div>' + (b.status === 'confirmed' && !past ? '<div class="actions"><a href="/cancel/' + esc(b.cancelToken) + '/invite.ics">Calendar file</a> <button data-action="cancel-booking" class="danger">Cancel booking</button></div>' : '') + '</article>';
+  return '<article class="card" data-booking="' + b.id + '"><div class="row"><div><strong>' + esc(fmt(b.startsAt, overview.timeZone)) + '</strong> <span class="muted">(' + esc(overview.timeZone) + ')</span><div>' + esc(b.eventName) + ' · ' + esc(b.guestName) + ' &lt;' + esc(b.guestEmail) + '&gt;</div>' + (b.notes ? '<div class="muted">' + esc(b.notes) + '</div>' : '') + '<div class="muted">Guest time zone ' + esc(b.guestTimeZone) + ' · booked ' + esc(fmt(b.createdAt, overview.timeZone)) + (b.cancelledAt ? ' · cancelled by ' + esc(b.cancelledBy) : '') + (b.rescheduledFrom ? ' · moved from ' + esc(fmt(b.rescheduledFrom, overview.timeZone)) : '') + (b.reminderSentAt ? ' · reminder sent' : '') + '</div></div>' + (b.status === 'cancelled' ? '<span class="badge off">CANCELLED</span>' : past ? '<span class="badge warn">PAST</span>' : '<span class="badge">CONFIRMED</span>') + '</div>' + (b.status === 'confirmed' && !past ? '<div class="actions"><a href="/cancel/' + esc(b.cancelToken) + '/invite.ics">Calendar file</a> <a href="/reschedule/' + esc(b.cancelToken) + '">Reschedule</a> <button data-action="cancel-booking" class="danger">Cancel booking</button></div>' : '') + '</article>';
 }
 function render() {
   $('summary').innerHTML = '<span>Upcoming ' + overview.upcoming + '</span><span>Today ' + overview.today + '</span><span>Event types ' + overview.eventTypes + '</span><span>Email ' + (overview.smtpConfigured ? 'on' : 'off') + '</span><span>Zone ' + esc(overview.timeZone) + '</span>';

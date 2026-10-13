@@ -11,7 +11,8 @@ A small, self-hosted alternative to hosted scheduling tools such as Calendly. Pu
 - Public booking page with a calendar, free slots shown in the guest's time zone, and a confirmation screen
 - Double-booking protection: the slot is re-checked at confirmation time
 - Calendar invitations (.ics) for guests and the owner; confirmation and cancellation emails through SMTP
-- Guest self-service cancellation through a private link
+- Guest self-service rescheduling and cancellation through a private link; calendar clients receive the updated invitation
+- Reminder emails a configurable number of hours before each booking
 - Dashboard with event types, upcoming and past bookings, owner-side cancellation, and blocked time
 - Admin sign-in with password plus optional TOTP two-factor authentication
 - systemd unit and Docker image
@@ -52,7 +53,7 @@ Availability is defined per event type as weekly windows (for example Monday to 
 
 Guests see slots converted to their browser's time zone. When a guest confirms, the exact slot is validated again, so two guests cannot take the same time. Daylight saving changes are handled with the built-in `Intl` API; no time zone library is needed.
 
-Each booking gets a private cancel link (`/cancel/<token>`) and a calendar file (`/cancel/<token>/invite.ics`). When SMTP is configured, the guest and the owner receive the invitation by email, and cancellations send an update.
+Each booking gets a private link (`/cancel/<token>`) where the guest can reschedule or cancel, and a calendar file (`/cancel/<token>/invite.ics`). Rescheduling re-checks availability (the booking's own slot stays available to it) and increments the invitation's `SEQUENCE`, so Google Calendar, Outlook and Apple Calendar update the existing event instead of creating a second one. When SMTP is configured, the guest and the owner receive the invitation by email; reschedules and cancellations send an update, and a reminder goes out `REMINDER_HOURS` before the start (once per booking).
 
 ## Email
 
@@ -81,10 +82,11 @@ Without admin credentials the dashboard is open. Only run it that way on a priva
 | `SMTP_USER` / `SMTP_PASSWORD` | empty | Optional SMTP credentials |
 | `ALERT_FROM` | empty | Sender address; enables email together with `SMTP_HOST` |
 | `OWNER_EMAIL` | `ALERT_FROM` | Where owner notifications go |
+| `REMINDER_HOURS` | `24` | Send a reminder this many hours before a booking; `0` disables reminders |
 
 ## API
 
-Public endpoints: `GET /api/book/:slug` (event info and bookable days), `GET /api/book/:slug/slots?day=YYYY-MM-DD`, `POST /api/book/:slug` with `startsAt`, `name`, `email`, `notes`, `timeZone`, and `POST /api/cancel/:token`.
+Public endpoints: `GET /api/book/:slug` (event info and bookable days), `GET /api/book/:slug/slots?day=YYYY-MM-DD`, `POST /api/book/:slug` with `startsAt`, `name`, `email`, `notes`, `timeZone`, `GET /api/reschedule/:token` (optionally `?day=`), `POST /api/reschedule/:token` with `startsAt`, and `POST /api/cancel/:token`.
 
 Admin endpoints under `/api/admin`: `overview`, `event-types` (list, create, update, delete), `bookings?past=true`, `bookings/:id/cancel`, and `blocks` (list, create, delete). Availability windows are sent as `{ "weekday": 1, "start": "09:00", "end": "17:00" }` with Sunday as weekday 0.
 
@@ -115,7 +117,6 @@ Put a reverse proxy with TLS in front of the service and set `NODE_ENV=productio
 
 - Single host and single calendar; no team round-robin or multiple calendars.
 - No Google or Outlook calendar synchronization; use the .ics invitations and blocked time instead.
-- No rescheduling flow; guests cancel and book again.
 - No payments, custom questions, or reminders.
 
 ## License

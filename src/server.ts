@@ -19,6 +19,9 @@ import {
 import {
   cancelBooking,
   createBlock,
+  dueReminders,
+  markReminded,
+  rescheduleBooking,
   createBooking,
   getBooking,
   getBookingByToken,
@@ -44,6 +47,7 @@ import {
   indexPage,
   loginPage,
   messagePage,
+  reschedulePage,
   securityPage,
 } from './ui.js';
 
@@ -237,6 +241,62 @@ export function createServer(db: Database.Database, options: ServerOptions = {})
     r.setHeader('Content-Disposition', 'attachment; filename="invite.ics"');
     r.type('text/calendar').send(bookingIcs(booking, event, ctx(q)));
   });
+  app.get('/reschedule/:token', (q, r) => {
+    const booking = getBookingByToken(db, q.params.token);
+    const event = booking && getEventType(db, booking.eventTypeId);
+    if (!booking || !event)
+      return r.status(404).type('html').send(messagePage('Not found', 'This booking link is not valid.'));
+    if (booking.status !== 'confirmed')
+      return r
+        .status(410)
+        .type('html')
+        .send(
+          messagePage(
+            'Booking cancelled',
+            'A cancelled booking cannot be rescheduled. Book a new time instead.'
+          )
+        );
+    r.type('html').send(reschedulePage(booking, publicEvent(q, event)));
+  });
+  app.get('/api/reschedule/:token', (q, r) => {
+    const booking = getBookingByToken(db, q.params.token);
+    const event = booking && getEventType(db, booking.eventTypeId);
+    if (!booking || !event || booking.status !== 'confirmed') return r.sendStatus(404);
+    const day = typeof q.query.day === 'string' ? q.query.day : undefined;
+    try {
+      r.json({
+        ...publicEvent(q, event),
+        startsAt: booking.startsAt,
+        days: day ? undefined : availableDays(db, event, timeZone, now()),
+        slots: day ? slotsForDay(db, event, day, timeZone, now(), booking.id) : undefined,
+      });
+    } catch (e) {
+      badRequest(r, e);
+    }
+  });
+  app.post('/api/reschedule/:token', async (q, r) => {
+    const booking = getBookingByToken(db, q.params.token);
+    const event = booking && getEventType(db, booking.eventTypeId);
+    if (!booking || !event) return r.sendStatus(404);
+    if (booking.status !== 'confirmed')
+      return r.status(410).send('A cancelled booking cannot be rescheduled');
+    const startsAt = Number(q.body?.startsAt);
+    if (!Number.isFinite(startsAt)) return r.status(400).send('Choose a time slot');
+    if (startsAt === booking.startsAt) return r.status(400).send('That is the current time of the booking');
+    if (!slotIsBookable(db, event, startsAt, timeZone, now(), booking.id))
+      return r.status(409).send('That time is no longer available. Please pick another slot.');
+    const moved = rescheduleBooking(db, booking.id, startsAt, event.durationMinutes)!;
+    const mail =
+      smtpConfigured() || options.mailer
+        ? await notifyBooking(mailer, moved, event, ctx(q), 'rescheduled')
+        : undefined;
+    r.json({
+      ok: true,
+      startsAt: moved.startsAt,
+      endsAt: moved.endsAt,
+      emailSent: Boolean(mail?.guest.success),
+    });
+  });
   app.post('/api/cancel/:token', async (q, r) => {
     const booking = getBookingByToken(db, q.params.token);
     if (!booking) return r.sendStatus(404);
@@ -349,10 +409,33 @@ export function createServer(db: Database.Database, options: ServerOptions = {})
     removeBlock(db, Number(q.params.id)) ? r.sendStatus(204) : r.sendStatus(404)
   );
 
+  /** Sends reminder emails for bookings starting within `hoursAhead`. Called by the process timer. */
+  const sendReminders = async (hoursAhead: number) => {
+    if (!(smtpConfigured() || options.mailer)) return 0;
+    let sent = 0;
+    for (const booking of dueReminders(db, hoursAhead, now())) {
+      const event = getEventType(db, booking.eventTypeId);
+      if (!event) continue;
+      const base = {
+        baseUrl:
+          (options.baseUrl ?? process.env.BASE_URL?.trim() ?? '').replace(/\/+$/, '') || 'http://localhost',
+        ownerName,
+        timeZone,
+      };
+      const result = await notifyBooking(mailer, booking, event, base, 'reminder');
+      if (result.guest.success || result.owner.success) {
+        markReminded(db, booking.id, now());
+        sent++;
+      }
+    }
+    return sent;
+  };
+  (app as express.Express & { sendReminders: typeof sendReminders }).sendReminders = sendReminders;
+
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     const status = (error as any)?.type === 'entity.parse.failed' ? 400 : ((error as any)?.status ?? 500);
     if (status >= 500) console.error(error);
     res.status(status).json({ error: status === 400 ? 'Invalid JSON body' : 'Internal server error' });
   });
-  return app;
+  return app as express.Express & { sendReminders: (hoursAhead: number) => Promise<number> };
 }

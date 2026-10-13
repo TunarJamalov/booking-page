@@ -193,7 +193,8 @@ describe('booking flow over HTTP', () => {
     expect(ics).toContain('SUMMARY:Intro call with Tunar');
     expect(ics).toContain('METHOD:REQUEST');
     const cancelHtml = await (await fetch(`${base}/cancel/${token}`)).text();
-    expect(cancelHtml).toContain('Cancel booking');
+    expect(cancelHtml).toContain('Manage booking');
+    expect(cancelHtml).toContain(`/reschedule/${token}`);
     expect(cancelHtml).not.toContain('Guest <b>');
     expect((await fetch(`${base}/api/cancel/${token}`, { method: 'POST' })).status).toBe(200);
     expect(
@@ -308,5 +309,108 @@ describe('ics', () => {
     expect(ics).toContain('ATTENDEE;CN=A\\, B\\; C:mailto:a@b.c');
     expect(ics).toContain('line1\\nline2');
     expect(ics).toContain('STATUS:CANCELLED');
+  });
+});
+
+describe('rescheduling and reminders', () => {
+  const sent: { to: string; subject: string; text: string; ics?: string }[] = [];
+  const mailer: Mailer = {
+    send: async (to, subject, text, ics) => (sent.push({ to, subject, text, ics }), { success: true }),
+  };
+  it('moves a booking to a free slot, keeps its own slot available, and bumps the ICS sequence', async () => {
+    sent.length = 0;
+    const ev = event();
+    const app = createServer(db, {
+      baseUrl: 'https://book.example',
+      timeZone: TZ,
+      ownerName: 'Tunar',
+      mailer,
+      now: () => MONDAY_8AM,
+    });
+    const server = app.listen(0);
+    await new Promise<void>((resolve) => server.once('listening', () => resolve()));
+    const base = `http://127.0.0.1:${(server.address() as any).port}`;
+    const json = (path: string, method: string, body?: unknown) =>
+      fetch(`${base}${path}`, {
+        method,
+        headers: { 'content-type': 'application/json' },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+    const slots = (await (await fetch(`${base}/api/book/intro-call/slots?day=2026-03-02`)).json()).slots;
+    const booked = await (
+      await json('/api/book/intro-call', 'POST', {
+        startsAt: slots[0].startsAt,
+        name: 'Guest',
+        email: 'g@example.com',
+      })
+    ).json();
+    const token = booked.cancelUrl.split('/').pop();
+    const info = await (await fetch(`${base}/api/reschedule/${token}`)).json();
+    expect(info.startsAt).toBe(slots[0].startsAt);
+    expect(info.days).toEqual(['2026-03-02']);
+    const own = (await (await fetch(`${base}/api/reschedule/${token}?day=2026-03-02`)).json()).slots;
+    // The booking's own slot is still listed for the reschedule picker, but not on the public page.
+    expect(own.some((s: any) => s.startsAt === slots[0].startsAt)).toBe(true);
+    expect(
+      (await (await fetch(`${base}/api/book/intro-call/slots?day=2026-03-02`)).json()).slots.some(
+        (s: any) => s.startsAt === slots[0].startsAt
+      )
+    ).toBe(false);
+    expect((await json(`/api/reschedule/${token}`, 'POST', { startsAt: slots[0].startsAt })).status).toBe(
+      400
+    );
+    const moved = await json(`/api/reschedule/${token}`, 'POST', { startsAt: slots[2].startsAt });
+    expect(moved.status).toBe(200);
+    expect((await moved.json()).startsAt).toBe(slots[2].startsAt);
+    expect(sent.at(-1)!.subject).toContain('Rescheduled');
+    expect(sent.at(-1)!.text).toContain('Rescheduled');
+    expect(sent.at(-1)!.ics).toContain('SEQUENCE:1');
+    const page = await (await fetch(`${base}/reschedule/${token}`)).text();
+    expect(() => new Function(page.match(/<script>([\s\S]*)<\/script>/)![1])).not.toThrow();
+    const admin = await (await fetch(`${base}/api/admin/bookings`)).json();
+    expect(admin[0]).toMatchObject({
+      startsAt: slots[2].startsAt,
+      rescheduledFrom: slots[0].startsAt,
+      sequence: 1,
+    });
+    await fetch(`${base}/api/cancel/${token}`, { method: 'POST' });
+    expect((await fetch(`${base}/reschedule/${token}`)).status).toBe(410);
+    server.close();
+  });
+
+  it('sends one reminder per booking inside the reminder window', async () => {
+    sent.length = 0;
+    const ev = event();
+    const start = MONDAY_8AM + 10 * 3600000;
+    createBooking(db, {
+      eventTypeId: ev.id,
+      startsAt: start,
+      endsAt: start + 1800000,
+      guestName: 'Soon',
+      guestEmail: 'soon@example.com',
+      guestTimeZone: TZ,
+      notes: '',
+    });
+    createBooking(db, {
+      eventTypeId: ev.id,
+      startsAt: start + 5 * 86400000,
+      endsAt: start + 5 * 86400000 + 1800000,
+      guestName: 'Later',
+      guestEmail: 'later@example.com',
+      guestTimeZone: TZ,
+      notes: '',
+    });
+    const app = createServer(db, {
+      baseUrl: 'https://book.example',
+      timeZone: TZ,
+      mailer,
+      now: () => MONDAY_8AM,
+    });
+    expect(await app.sendReminders(24)).toBe(1);
+    expect(sent.map((m) => m.to)).toContain('soon@example.com');
+    expect(sent.map((m) => m.to)).not.toContain('later@example.com');
+    expect(sent[0].subject).toContain('Reminder');
+    expect(await app.sendReminders(24)).toBe(0);
+    expect(await app.sendReminders(0)).toBe(0);
   });
 });

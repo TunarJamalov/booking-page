@@ -38,8 +38,9 @@ export function bookingIcs(booking: Booking, event: EventType, ctx: MailContext)
     `DTSTAMP:${icsDate(Date.now())}`,
     `DTSTART:${icsDate(booking.startsAt)}`,
     `DTEND:${icsDate(booking.endsAt)}`,
+    `SEQUENCE:${booking.sequence ?? 0}`,
     `SUMMARY:${icsText(`${event.name} with ${ctx.ownerName || 'host'}`)}`,
-    `DESCRIPTION:${icsText(`${event.description}${booking.notes ? `\n\nNotes: ${booking.notes}` : ''}\n\nCancel: ${ctx.baseUrl}/cancel/${booking.cancelToken}`)}`,
+    `DESCRIPTION:${icsText(`${event.description}${booking.notes ? `\n\nNotes: ${booking.notes}` : ''}\n\nReschedule or cancel: ${ctx.baseUrl}/cancel/${booking.cancelToken}`)}`,
     event.location ? `LOCATION:${icsText(event.location)}` : '',
     `STATUS:${cancelled ? 'CANCELLED' : 'CONFIRMED'}`,
     `ATTENDEE;CN=${icsText(booking.guestName)}:mailto:${booking.guestEmail}`,
@@ -54,7 +55,11 @@ export function bookingText(booking: Booking, event: EventType, ctx: MailContext
   const when = `${formatInZone(booking.startsAt, booking.guestTimeZone)} (${booking.guestTimeZone})`;
   const ownerWhen = `${formatInZone(booking.startsAt, ctx.timeZone)} (${ctx.timeZone})`;
   const lines = [
-    booking.status === 'cancelled' ? `Cancelled: ${event.name}` : `Confirmed: ${event.name}`,
+    booking.status === 'cancelled'
+      ? `Cancelled: ${event.name}`
+      : booking.rescheduledFrom
+        ? `Rescheduled: ${event.name} (was ${formatInZone(booking.rescheduledFrom, forOwner ? ctx.timeZone : booking.guestTimeZone)})`
+        : `Confirmed: ${event.name}`,
     '',
     `When: ${forOwner ? ownerWhen : when}`,
     forOwner ? `Guest: ${booking.guestName} <${booking.guestEmail}>` : `With: ${ctx.ownerName || 'host'}`,
@@ -62,7 +67,9 @@ export function bookingText(booking: Booking, event: EventType, ctx: MailContext
     event.location ? `Where: ${event.location}` : '',
     booking.notes ? `Notes: ${booking.notes}` : '',
     '',
-    booking.status === 'cancelled' ? '' : `Cancel this booking: ${ctx.baseUrl}/cancel/${booking.cancelToken}`,
+    booking.status === 'cancelled'
+      ? ''
+      : `Reschedule or cancel: ${ctx.baseUrl}/cancel/${booking.cancelToken}`,
   ];
   return lines
     .filter((l, i) => l !== '' || lines[i - 1] !== '')
@@ -112,8 +119,22 @@ export function smtpMailer(): Mailer {
 }
 
 /** Sends confirmation or cancellation emails to the guest and the owner. Never throws. */
-export async function notifyBooking(mailer: Mailer, booking: Booking, event: EventType, ctx: MailContext) {
-  const subject = `${booking.status === 'cancelled' ? 'Cancelled' : 'Confirmed'}: ${event.name} on ${formatInZone(booking.startsAt, booking.guestTimeZone)}`;
+export async function notifyBooking(
+  mailer: Mailer,
+  booking: Booking,
+  event: EventType,
+  ctx: MailContext,
+  kind: 'confirmed' | 'cancelled' | 'rescheduled' | 'reminder' = booking.status === 'cancelled'
+    ? 'cancelled'
+    : 'confirmed'
+) {
+  const label = {
+    confirmed: 'Confirmed',
+    cancelled: 'Cancelled',
+    rescheduled: 'Rescheduled',
+    reminder: 'Reminder',
+  }[kind];
+  const subject = `${label}: ${event.name} on ${formatInZone(booking.startsAt, booking.guestTimeZone)}`;
   const ics = bookingIcs(booking, event, ctx);
   const owner = process.env.OWNER_EMAIL?.trim() || process.env.ALERT_FROM?.trim();
   const results = await Promise.all([
